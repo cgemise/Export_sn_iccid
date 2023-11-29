@@ -77,7 +77,7 @@ def read_input_file(file_path):
     Lit un fichier contenant les informations des appareils. Gère deux formats :
     1. IP avec masque, ref_client, slug, nd
     2. IP avec masque1, IP avec masque2, ref_client, slug, nd
-    Renvoie les informations sous forme de liste de dictionnaires, en extrayant l'adresse IP sans le masque.
+    Renvoie les informations sous forme de liste de dictionnaires, en extrayant la première adresse IP sans le masque.
     Gère également les lignes mal formatées.
     """
     devices = []
@@ -86,16 +86,16 @@ def read_input_file(file_path):
         for line in file:
             line_count += 1
             try:
-                parts = line.strip().split()
-                # Détecter le format de la ligne et extraire l'IP avec masque
-                if len(parts) == 5:  # Format avec deux IP
-                    ip_with_mask, _, ref_client, slug, nd = parts
-                elif len(parts) == 4:  # Format standard avec une IP
-                    ip_with_mask, ref_client, slug, nd = parts
-                else:
+                parts = line.strip().split(maxsplit=3)
+                if len(parts) != 4:
                     raise ValueError("Nombre incorrect de champs dans la ligne")
 
+                # Gérer les adresses IP (une ou deux) dans le premier champ
+                ip_fields = parts[0].split(',')
+                ip_with_mask = ip_fields[0]  # Prendre la première IP/masque
+
                 ip = ip_with_mask.split('/')[0]  # Sépare l'IP du masque et prend l'IP
+                ref_client, slug, nd = parts[1:]  # Récupère les autres champs
                 devices.append({'ip': ip, 'ref_client': ref_client, 'slug': slug, 'nd': nd})
                 logging.info(f"Ligne traitée avec succès : {line.strip()}")
             except ValueError as e:
@@ -103,6 +103,7 @@ def read_input_file(file_path):
                 print(error_msg)
                 logging.error(error_msg)
     return devices, line_count
+
 
 
 
