@@ -70,14 +70,12 @@ def connect_and_execute(device_info, command):
     return None, 'unknown_error'
 
 
-
-
 def read_input_file(file_path):
     """
     Lit un fichier contenant les informations des appareils. Gère deux formats :
     1. IP avec masque, ref_client, slug, nd
     2. IP avec masque1, IP avec masque2, ref_client, slug, nd
-    Renvoie les informations sous forme de liste de dictionnaires, en extrayant la première adresse IP sans le masque.
+    Renvoie les informations sous forme de liste de dictionnaires, en extrayant l'adresse IP sans le masque.
     Gère également les lignes mal formatées.
     """
     devices = []
@@ -86,16 +84,16 @@ def read_input_file(file_path):
         for line in file:
             line_count += 1
             try:
-                parts = line.strip().split(maxsplit=3)
-                if len(parts) != 4:
+                parts = line.strip().split()
+                # Détecter le format de la ligne et extraire l'IP avec masque
+                if len(parts) == 5:  # Format avec deux IP
+                    ip_with_mask, _, ref_client, slug, nd = parts
+                elif len(parts) == 4:  # Format standard avec une IP
+                    ip_with_mask, ref_client, slug, nd = parts
+                else:
                     raise ValueError("Nombre incorrect de champs dans la ligne")
 
-                # Gérer les adresses IP (une ou deux) dans le premier champ
-                ip_fields = parts[0].split(',')
-                ip_with_mask = ip_fields[0]  # Prendre la première IP/masque
-
                 ip = ip_with_mask.split('/')[0]  # Sépare l'IP du masque et prend l'IP
-                ref_client, slug, nd = parts[1:]  # Récupère les autres champs
                 devices.append({'ip': ip, 'ref_client': ref_client, 'slug': slug, 'nd': nd})
                 logging.info(f"Ligne traitée avec succès : {line.strip()}")
             except ValueError as e:
@@ -103,7 +101,6 @@ def read_input_file(file_path):
                 print(error_msg)
                 logging.error(error_msg)
     return devices, line_count
-
 
 
 
@@ -122,16 +119,10 @@ def generate_password(slug):
 
 def handle_device(device_info):
     logging.debug(f"Traitement de l'appareil: {device_info['ip']}")
-    """
-    Gère la connexion à un appareil et récupère les données nécessaires (SN, ICCID).
-    Retourne un dictionnaire contenant les informations collectées et les détails des erreurs, le cas échéant.
-    """
 
     error = False
     error_msg = ""
-    sn, iccid = None, None
-
-
+     sn, iccid, model, name_apn = None, None, None, 'NONE'  # Valeur par défaut pour name_apn
 
     # Commandes pour récupérer le SN et identifier les appareils 4G
     sn_command = 'sh version | i Processor board ID'
@@ -139,7 +130,7 @@ def handle_device(device_info):
 
     # Connexion à l'appareil et récupération du SN
     sn_output, error_type = connect_and_execute(device_info, sn_command)
-    if sn_output and not error_type: 
+    if sn_output and not error_type:
         logging.debug(f"SN récupéré pour {device_info['ip']}: {sn_output}")
         try:
             sn = sn_output.split()[3]  # SN est à la 4ème position
@@ -158,20 +149,23 @@ def handle_device(device_info):
             error_msg = f"Erreur d'authentification pour l'appareil {device_info['ip']}"
         else:
             error_msg = f"Autre erreur pour l'appareil {device_info['ip']}"
-
         logging.error(error_msg)
         print(error_msg)
 
     if not error:
-
         # Identification du type d'appareil 4G et récupération de l'ICCID si nécessaire
         identify_4g_output, error_type_4g = connect_and_execute(device_info, identify_4g_command)
-        #iccid = None
         if identify_4g_output and not error_type_4g:
             model = identify_4g_output.split()[1]  # Le modèle est à la 2ème position
             logging.info(f"Modèle d'appareil 4G identifié pour {device_info['ip']}: {model}")
 
             if model == 'C881G-4G-GA-K9':
+                bouygues_output, _ = connect_and_execute(device_info, 'sh Cellular 0 all | i F-Bouygues Telecom')
+                orange_output, _ = connect_and_execute(device_info, 'sh Cellular 0 all | i Orange')
+                if bouygues_output:
+                    name_apn = 'EIT'
+                elif orange_output:
+                    name_apn = 'Orange'
                 iccid_command = 'sh cellular 0 all | i ICCID'
                 iccid_output, error_type_iccid = connect_and_execute(device_info, iccid_command)
                 if iccid_output and not error_type_iccid:
@@ -184,8 +178,13 @@ def handle_device(device_info):
                         logging.error(error_msg)
                         print(error_msg)
 
-                
             elif model == 'C1111-4PLTEEA':
+                bouygues_output, _ = connect_and_execute(device_info, 'sh Cellular 0/2/0 all | i F-Bouygues Telecom')
+                orange_output, _ = connect_and_execute(device_info, 'sh Cellular 0/2/0 all | i Orange')
+                if bouygues_output:
+                    name_apn = 'EIT'
+                elif orange_output:
+                    name_apn = 'Orange'
                 iccid_command = 'sh Cellular 0/2/0 all | i ICCID'
                 iccid_output, error_type_iccid = connect_and_execute(device_info, iccid_command)
                 if iccid_output and not error_type_iccid:
@@ -197,12 +196,103 @@ def handle_device(device_info):
                         error_msg = f"Impossible de récupérer l'ICCID pour l'appareil {device_info['ip']}"
                         logging.error(error_msg)
                         print(error_msg)
-        pass
-    logging.debug(f"Fin du traitement pour {device_info['ip']}, SN: {sn}, ICCID: {iccid}")
-    # Retourne les informations récupérées
+
+    logging.debug(f"Fin du traitement pour {device_info['ip']}, SN: {sn}, ICCID: {iccid}, Modèle: {model}")
+    return {'ip': device_info['ip'], 'ref_client': device_info['ref_client'],
+            'slug': device_info['slug'], 'nd': device_info['nd'],
+            'sn': sn, 'iccid': iccid, 'model': model, 'name_apn': name_apn,
+            'error': error, 'error_msg': error_msg}
+
+def handle_device(device_info):
+    logging.debug(f"Traitement de l'appareil: {device_info['ip']}")
+
+    error = False
+    error_msg = ""
+    sn, iccid, model, name_apn = None, None, None, 'NONE'  # Valeur par défaut pour name_apn
+
+    # Commandes pour récupérer le SN et identifier les appareils 4G
+    sn_command = 'sh version | i Processor board ID'
+    identify_4g_command = 'sh version | i bytes of memory'
+
+    # Connexion à l'appareil et récupération du SN
+    sn_output, error_type = connect_and_execute(device_info, sn_command)
+    if sn_output and not error_type:
+        logging.debug(f"SN récupéré pour {device_info['ip']}: {sn_output}")
+        try:
+            sn = sn_output.split()[3]  # SN est à la 4ème position
+            logging.info(f"SN récupéré pour l'appareil {device_info['ip']}: {sn}")
+        except IndexError:
+            error = True
+            error_msg = f"Impossible de récupérer le SN pour l'appareil {device_info['ip']}"
+            logging.error(error_msg)
+            print(error_msg)
+    else:
+        logging.debug(f"Erreur détectée pour {device_info['ip']}, Type d'erreur: {error_type}")
+        error = True
+        if error_type == 'timeout':
+            error_msg = f"Timeout pour l'appareil {device_info['ip']}"
+        elif error_type == 'auth_error':
+            error_msg = f"Erreur d'authentification pour l'appareil {device_info['ip']}"
+        else:
+            error_msg = f"Autre erreur pour l'appareil {device_info['ip']}"
+        logging.error(error_msg)
+        print(error_msg)
+
+    if not error:
+        # Identification du type d'appareil 4G et récupération de l'ICCID si nécessaire
+        identify_4g_output, error_type_4g = connect_and_execute(device_info, identify_4g_command)
+        if identify_4g_output and not error_type_4g:
+            model = identify_4g_output.split()[1]  # Le modèle est à la 2ème position
+            logging.info(f"Modèle d'appareil 4G identifié pour {device_info['ip']}: {model}")
+
+            if model == 'C881G-4G-GA-K9':
+                iccid_command = 'sh cellular 0 all | i ICCID'
+                iccid_output, error_type_iccid = connect_and_execute(device_info, iccid_command)
+                if iccid_output and not error_type_iccid:
+                    try:
+                        iccid = iccid_output.split()[6]  # ICCID est à la 7ème position
+                        logging.info(f"ICCID récupéré pour l'appareil {device_info['ip']}: {iccid}")
+
+                        # Vérification du type de SIM pour C881G-4G-GA-K9
+                        for apn_command, apn_name in [('sh Cellular 0 all | i F-Bouygues Telecom', 'EIT'),
+                                                      ('sh Cellular 0 all | i Orange', 'Orange')]:
+                            apn_output, _ = connect_and_execute(device_info, apn_command)
+                            if apn_output:
+                                name_apn = apn_name
+                                break
+                    except IndexError:
+                        error = True
+                        error_msg = f"Impossible de récupérer l'ICCID pour l'appareil {device_info['ip']}"
+                        logging.error(error_msg)
+                        print(error_msg)
+
+            elif model == 'C1111-4PLTEEA':
+                iccid_command = 'sh Cellular 0/2/0 all | i ICCID'
+                iccid_output, error_type_iccid = connect_and_execute(device_info, iccid_command)
+                if iccid_output and not error_type_iccid:
+                    try:
+                        iccid = iccid_output.split()[6]  # ICCID est à la 7ème position
+                        logging.info(f"ICCID récupéré pour l'appareil {device_info['ip']}: {iccid}")
+
+                        # Vérification du type de SIM pour C1111-4PLTEEA
+                        for apn_command, apn_name in [('sh Cellular 0/2/0 all | i F-Bouygues Telecom', 'EIT'),
+                                                      ('sh Cellular 0/2/0 all | i Orange', 'Orange')]:
+                            apn_output, _ = connect_and_execute(device_info, apn_command)
+                            if apn_output:
+                                name_apn = apn_name
+                                break
+                    except IndexError:
+                        error = True
+                        error_msg = f"Impossible de récupérer l'ICCID pour l'appareil {device_info['ip']}"
+                        logging.error(error_msg)
+                        print(error_msg)
+
+    logging.debug(f"Fin du traitement pour {device_info['ip']}, SN: {sn}, ICCID: {iccid}, Modèle: {model}, Type APN: {name_apn}")
     return {'ip': device_info['ip'], 'ref_client': device_info['ref_client'], 
             'slug': device_info['slug'], 'nd': device_info['nd'], 
-            'sn': sn, 'iccid': iccid, 'error': error, 'error_msg': error_msg}
+            'sn': sn, 'iccid': iccid, 'model': model, 'name_apn': name_apn,
+            'error': error, 'error_msg': error_msg}
+
 
 
 
@@ -218,8 +308,8 @@ def create_excel_file(devices_data,  total_lines):
     error_sheet = wb.create_sheet("Devices avec Erreurs")
 
     # Ajout des en-têtes pour chaque feuille
-    sn_sheet.append(['ip', 'ref_client', 'slug', 'nd', 'sn'])
-    g4_sheet.append(['ip', 'ref_client', 'slug', 'nd', 'sn', 'iccid'])
+    sn_sheet.append(['ip', 'ref_client', 'slug', 'nd', 'sn', 'model', 'name_apn'])
+    g4_sheet.append(['ip', 'ref_client', 'slug', 'nd', 'sn', 'iccid', 'model', 'name_apn'])
     error_sheet.append(['ip', 'ref_client', 'slug', 'nd', 'raison'])
 
     # Remplissage des feuilles avec les données
@@ -228,9 +318,11 @@ def create_excel_file(devices_data,  total_lines):
         if device['error']:
             error_sheet.append([device['ip'], device['ref_client'], device['slug'], device['nd'], device['error_msg']])
         elif device['iccid']:
-            g4_sheet.append([device['ip'], device['ref_client'], device['slug'], device['nd'], device['sn'], device['iccid']])
+            g4_sheet.append([device['ip'], device['ref_client'], device['slug'], device['nd'],
+                             device['sn'], device['iccid'], device['model'], device.get('name_apn', 'NONE')])
         else:
-            sn_sheet.append([device['ip'], device['ref_client'], device['slug'], device['nd'], device['sn']])
+            sn_sheet.append([device['ip'], device['ref_client'], device['slug'], device['nd'],
+                             device['sn'], device['model'], device.get('name_apn', 'NONE')])
 
     logging.debug("Fichier Excel créé avec succès")
 
@@ -279,7 +371,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
 
